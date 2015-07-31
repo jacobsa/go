@@ -54,7 +54,8 @@ type gcmFieldElement struct {
 type gcm struct {
 	cipher    Block
 	nonceSize int
-	// productTable contains the first sixteen powers of the key, H.
+	hashKey   gcmFieldElement
+	// productTable contains the first sixteen powers of hashKey.
 	// However, they are in bit reversed order. See NewGCMWithNonceSize.
 	productTable [16]gcmFieldElement
 }
@@ -81,15 +82,17 @@ func NewGCMWithNonceSize(cipher Block, size int) (AEAD, error) {
 
 	g := &gcm{cipher: cipher, nonceSize: size}
 
+	// Load the key as a 128-bit big endian number, treating it as an element of
+	// GF(2^128) where the most significant bit is the coefficient of x^0.
+	g.hashKey.low = getUint64(key[:8])
+	g.hashKey.high = getUint64(key[8:])
+
 	// We precompute 16 multiples of |key|. However, when we do lookups
 	// into this table we'll be using bits from a field element and
 	// therefore the bits will be in the reverse order. So normally one
 	// would expect, say, 4*key to be in index 4 of the table but due to
 	// this bit ordering it will actually be in index 0010 (base 2) = 2.
-	x := gcmFieldElement{
-		getUint64(key[:8]),
-		getUint64(key[8:]),
-	}
+	x := g.hashKey
 	g.productTable[reverseBits(1)] = x
 
 	for i := 2; i < 16; i += 2 {
@@ -238,9 +241,9 @@ func (g *gcm) mul(y *gcmFieldElement) {
 	*y = z
 }
 
-// updateBlocks extends y with more polynomial terms from blocks, based on
+// updateBlocksSlow extends y with more polynomial terms from blocks, based on
 // Horner's rule. There must be a multiple of gcmBlockSize bytes in blocks.
-func (g *gcm) updateBlocks(y *gcmFieldElement, blocks []byte) {
+func (g *gcm) updateBlocksSlow(y *gcmFieldElement, blocks []byte) {
 	for len(blocks) > 0 {
 		y.low ^= getUint64(blocks)
 		y.high ^= getUint64(blocks[8:])
